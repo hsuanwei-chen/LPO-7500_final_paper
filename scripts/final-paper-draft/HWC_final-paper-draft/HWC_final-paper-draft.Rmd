@@ -106,12 +106,12 @@ library(vip) # variable importance
 #| label: define_filepaths
 #| include: false
 # Define paths to SPSS data files
-baseline_path <- here("data", "ICPSR_37871", "DS0001", "37871-0001-Data.sav")
-age1_path <- here("data", "ICPSR_37871", "DS0002", "37871-0002-Data.sav")
+baseline_path <- here("data", "37871-0001-Data.sav")
+age1_path <- here("data", "37871-0002-Data.sav")
 
 # Define paths for hyperparameter tuning results
-bfy_enet_path <- here("final_paper", "bfy_enet_tune_results.Rdata")
-bfy_rf_path <- here("final_paper", "bfy_rf_tune_results.Rdata")
+bfy_enet_path <- here("results", "bfy_enet_tune_results.Rdata")
+bfy_rf_path <- here("results", "bfy_rf_tune_results.Rdata")
 ```
 
 ```{r}
