@@ -1,0 +1,764 @@
+---
+# Supported options: 
+#   sn-nature:       Style for submissions to Nature Portfolio journals
+#   sn-basic:        Basic Springer Nature Reference Style/Chemistry Reference Style
+#   sn-mathphys:     Math and Physical Sciences Reference Style
+#   sn-aps:          American Physical Society (APS) Reference Style
+#   sn-vancouver:    Vancouver Reference Style
+#   sn-apa:          APA Reference Style 
+#   sn-chicago:      Chicago-based Humanities Reference Style
+#   default:         Default
+
+classoptions: 
+  - sn-basic      
+  # - Numbered      # Optional: Use numbered references instead of namedate references (only for sn-nature, sn-basic, sn-vancouver, sn-chicago, sn-mathphys or sn-nature)
+  # - referee       # Optional: Use double line spacing 
+  # - lineno        # Optional: Add line numbers
+  # - iicol         # Optional: Double column layour
+
+title: "Predicting Language Development among 12-month-old Infants From Low-Income Families: A Machine Learning Approach based on Socio-demographics Data at Birth"
+
+authors: 
+  - firstname: Hsuan-Wei
+    particle: (Isaac) 
+    lastname: Chen
+    email: hsuan-wei.chen@vanderbilt.edu
+    affiliation: 1
+    corresponding: TRUE
+    equalcont: These authors contributed equally to this work.
+    
+  - firstname: William
+    particle: R. 
+    lastname: Doyle
+    affiliation: 2
+    equalcont: These authors contributed equally to this work.
+
+affiliations:
+  - number: 1
+    corresponding: TRUE
+    info:
+      orgdiv: Department of Psychology and Human Development
+      orgname: Vanderbilt University
+    address:
+        city: Nashville
+        state: TN
+        country: USA
+  - number: 2
+    info:
+      orgdiv: Department of Leadership, Policy and Organizations
+      orgname: Vanderbilt University
+    address:
+        city: Nashville
+        state: TN
+        country: USA
+    
+keywords:
+  - language
+  - early childhood development
+  - low-income familites
+  - machine learning
+
+abstract: |
+  Predicting language development among infants from low-income families is crucial for later school success. This study uses machine learning models, including elastic net and random forest, to predict language development based on socio-demographic factors collected at birth. Using a dataset from the Baby’s First Years study designed to examine the causal effects of unconditional cash transfers on early development, our model was not able to achieve good predictive accuracy (RMSE = 0.841). However, a few important predictors such as child sex and household composition were identified and may provide implications for supporting language development. This work contributes to understanding how socio-demographic factors at birth influence language development among infants from low-income families.
+
+header-includes:
+
+bibliography: bibliography.bib
+output: rticles::springer_article
+---
+\newgeometry{top=1in, bottom=1in, left=1in, right=1in}
+
+```{r}
+#| label: setup
+#| include: false
+# Global settings for all chunks 
+knitr::opts_chunk$set(
+    echo = FALSE, 
+    fig.align = "center",
+    tbl.align = "center"
+  )
+
+# Clear all the variables in the environment
+rm(list = ls())
+
+# Print warnings immediately as they come up for troubleshooting purposes
+options(warn = 1)
+
+# Load packages
+# General 
+library(here) # Find files relative to my project root
+library(haven) # Read in SPSS datasets
+library(tidyverse) # Organize and clean data
+
+# Visualization
+library(gtsummary) # Create summary statistics
+library(ggrain) # Create raincloud plots
+library(kableExtra) # Format tables
+library(patchwork) # Combine multiple figures & plots
+
+# Machine learning
+library(tidymodels) # Modeling and machine learning
+library(ranger) # Engine for random forest model
+library(vip) # variable importance
+```
+
+```{r}
+#| label: define_filepaths
+#| include: false
+# Define paths to SPSS data files
+baseline_path <- here("data", "ICPSR_37871", "DS0001", "37871-0001-Data.sav")
+age1_path <- here("data", "ICPSR_37871", "DS0002", "37871-0002-Data.sav")
+
+# Define paths for hyperparameter tuning results
+bfy_enet_path <- here("final_paper", "bfy_enet_tune_results.Rdata")
+bfy_rf_path <- here("final_paper", "bfy_rf_tune_results.Rdata")
+```
+
+```{r}
+#| label: clean_data
+#| include: false
+# Read in SPSS data files
+baseline <- read_sav(baseline_path)
+age1 <- read_sav(age1_path)
+
+# Combine language outcome from age 1 dataset with baseline dataset based on ID
+age1 <- age1 |> 
+  select(PUBLICSAMPLEID, CASQLANGA1)
+
+# Join by keeping all observations in age 1 data
+bfy <- baseline |> 
+  right_join(age1, by = join_by(PUBLICSAMPLEID))
+
+################################################################################
+# The BFY dataset includes both raw and generated variables. Generated variables
+# were created by the BFY study staff. The user guide recommends analysts to 
+# use these variables for analysis because they have been cleaned and are easier 
+# to use.
+################################################################################
+
+# Function to look for variable labels with [Raw]
+raw_label <- function(x) {
+  grepl("\\[Raw\\]", attr(x, "label"))
+}
+
+# Remove raw variables based on variable label [Raw]
+# Remove duplicate variables
+# Convert variables to numeric
+bfy <- bfy |>
+  select(where(~ !raw_label(.))) |> 
+  select(-CBIRTHDIFF2A0) |> 
+  mutate(across(where(is.labelled), as.numeric))
+```
+
+```{r}
+#| label: split_data
+#| include: false
+# Create reproducible results
+set.seed(1234)
+
+# Split data into training set (75%) and testing set (25%)
+bfy_split <- initial_split(bfy)
+bfy_train <- training(bfy_split)
+bfy_test <- testing(bfy_split)
+```
+
+```{r}
+#| label: tables
+#| include: false
+# Table 1 - survey measures and example questions
+table_1 <- data.frame(
+    Measure = c(
+      "Child Information", 
+      "Mother Demographics", 
+      "Father Demographics",
+      "Mother-Father Relationship", 
+      "Household Roster", 
+      "Income/Net Worth",
+      "Public Assistance", 
+      "Maternal Health"
+    ),
+    "Survey Question Example" = c(
+      "Child is female (Yes/No)", 
+      "Mother's has unpaid maternity leave (Yes/No)", 
+      "Father's highest level of educaion attained (Multinomial)",
+      "Biological dad put money towards baby's arrival (Yes/No)", 
+      "Number of adults in the household including mother (Continuous)", 
+      "Household combined calculated income (Continuous)",
+      "Household receives child care subsidy (Yes/No)", 
+      "Average alcohol drinks per week during pregnancy (Continous)"
+    ),
+    check.names = FALSE
+  )
+
+# Table 2 - sample descriptives
+table_2 <- bfy |>
+  mutate(
+    TREATA0 = ifelse(TREATA0 == 0, "Low Cash Gift", "High Cash Gift"), 
+    MRACEA0 = factor(
+      MRACEA0,
+      levels = c(1, 2, 3, 4, 5, 6, 7),
+      labels = c(
+        "White", "Black", "Asian", "Native", "Multiple", "Other", "Hispanic"
+      )
+    ),
+    MEDLEVELA0 = factor(
+      MEDLEVELA0,
+      levels = c(1, 2, 3, 4, 5),
+      labels = c(
+        "Less than high school diploma", 
+        "High school diploma or GED", 
+        "Some college, no degree", 
+        "Associate's degree", 
+        "Bachelor's degree or higher"
+      )
+    ),
+  ) |> 
+  tbl_summary(
+    by = TREATA0, 
+    include = c(
+      MOMCALCAGEA0, MRACEA0, MEDLEVELA0, HHREVISEDINCOMEA0, MDEPRESSIONA0,
+    ),
+    label = list(
+      MOMCALCAGEA0 ~ "Age (years)", 
+      MRACEA0 ~ "Race/Ethnicity",
+      MEDLEVELA0 ~ "Education Level",
+      HHREVISEDINCOMEA0 ~ "Household Combined Income",
+      MDEPRESSIONA0 ~ "Maternal Depression (CEL-D)"
+    ), 
+    statistic = list(all_continuous() ~ "{mean} ({sd})"),
+    missing = "no",
+  ) |> 
+  bold_labels()
+```
+
+```{r}
+#| label: exploratory_analyses
+#| include: false
+############################## Univariate plots ################################
+# Raincloud plot for ASQ-3 scores
+fig_rain_ASQ <- bfy_train |> 
+  filter(!is.na(CASQLANGA1)) |> 
+  ggplot(aes(1, CASQLANGA1)) + 
+  geom_rain(
+    likert = TRUE,
+    violin.args = list(alpha = 0.5, color =  "#1e90ff", fill = "#1e90ff"), 
+    point.args = list(alpha = 0.5, color =  "#1e90ff"),
+    boxplot.args = list(alpha = 0.5, color = "#1e90ff", outlier.shape = NA)
+  ) + 
+  scale_x_continuous(limits = c(0.9, 1.5)) + 
+  scale_y_continuous(limits = c(-3.4, 1.5), breaks = seq(-3, 1.5, 0.5)) + 
+  labs(y = "ASQ-3 Communication z-scores") + 
+  theme_bw() + 
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank()
+  ) +
+  coord_flip()
+
+############################## Bivariate plots #################################
+# Bar chart of treatment group and ASQ-3 scores
+fig_bar_treat_ASQ <- bfy_train |> 
+  mutate(
+    TREATA0 = ifelse(TREATA0 == 1, "High Cash Gift", "Low Cash Gift"),
+    TREATA0 = factor(TREATA0)
+  ) |> 
+  group_by(TREATA0) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = fct_rev(TREATA0), y = mean, fill = TREATA0)) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.3)) +
+  scale_y_continuous(limits = c(0, 0.5), breaks = seq(0, 0.5, 0.1)) + 
+  scale_fill_brewer(palette = 'Dark2') + 
+  labs(fill = "Treatment group", y = "Mean ASQ-3 Comm z-scores") +
+  theme_bw() +
+  theme(legend.position = "none", axis.title.y = element_blank()) +
+  coord_flip()
+
+# Bar chart of maternal education level and ASQ-3 scores
+fig_bar_medu_ASQ <- bfy_train |> 
+  filter(!is.na(MEDLEVELA0)) |> 
+  mutate(
+    MEDLEVELA0 = factor(
+      MEDLEVELA0,
+      levels = c(5, 4, 3, 2, 1),
+      labels = c(
+        "Bachelor's (+) ", 
+        "Associate's", 
+        "Some college", 
+        "High school/GED", 
+        "High school (-) "
+      )
+    )
+  ) |> 
+  group_by(MEDLEVELA0) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = fct_rev(MEDLEVELA0), y = mean, fill = MEDLEVELA0)) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.3)) +
+  scale_y_continuous(limits = c(0, 0.5), breaks = seq(0, 0.5, 0.1)) + 
+  labs(fill = "Maternal Education", y = "Mean ASQ-3 Comm z-scores") +
+  theme_bw() +
+  theme(legend.position = "none", axis.title.y = element_blank()) +
+  coord_flip()
+
+# Scatter plot of household income and ASQ-3 scores
+fig_scatter_hhincome_asq <- bfy_train |> 
+  filter(!is.na(HHREVISEDINCOMEA0), !is.na(CASQLANGA1)) |> 
+  ggplot(aes(x = HHREVISEDINCOMEA0, y = CASQLANGA1)) + 
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = F) + 
+  scale_x_continuous(
+    limits = c(0, 300000), 
+    breaks = seq(0, 300000, 50000),
+    labels = c("0", "50K", "100k", "150K", "200K", "250K", "300K")
+  ) + 
+  scale_y_continuous(limits = c(-3.3, 1.5), breaks = seq(-3, 1.5, 0.5)) + 
+  labs(x = "Household Combined Income", y = "ASQ-3 Comm z-scores") +
+  theme_bw()
+
+# Scatter plot of maternal depression and ASQ-3 scores
+fig_scatter_mdepression_asq <- bfy |> 
+  filter(!is.na(MDEPRESSIONA0), !is.na(CASQLANGA1)) |> 
+  ggplot(aes(x = MDEPRESSIONA0, y = CASQLANGA1)) + 
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = F) + 
+  scale_x_continuous(limits = c(0, 25), breaks = seq(0, 25, 5)) + 
+  scale_y_continuous(limits = c(-3.3, 1.5), breaks = seq(-3, 1.5, 0.5)) + 
+  labs(x = "Maternal Depression", y = "ASQ-3 Comm z-Scores") +
+  theme_bw()
+
+# Combine bivariate plots into one figure
+fig_bivariate <- 
+  fig_bar_treat_ASQ + 
+  fig_bar_medu_ASQ + 
+  fig_scatter_hhincome_asq +
+  fig_scatter_mdepression_asq + 
+  plot_annotation(tag_levels = 'A')
+```
+
+```{r}
+#| label: enet_model
+#| include: false
+############################## Build the Model #################################
+# Define formula
+bfy_formula <- as.formula("CASQLANGA1 ~ .")
+
+# Define pre-processing steps
+bfy_enet_recipe <- bfy |>  
+  recipe(bfy_formula) |> 
+  update_role(CASQLANGA1, new_role = "outcome") |> 
+  update_role(PUBLICSAMPLEID, new_role = "id") |> 
+  step_other(all_nominal_predictors(), threshold = 0.01) |> 
+  step_dummy(all_nominal_predictors()) |> 
+  step_filter_missing(all_predictors(), threshold = 0.1) |> 
+  step_impute_mode(all_nominal_predictors()) |> 
+  step_impute_median(all_numeric_predictors()) |> 
+  step_naomit(all_outcomes()) |>
+  step_zv(all_predictors()) |> 
+  step_corr(all_predictors(), threshold = 0.95) |> 
+  step_normalize(all_predictors())
+
+# Apply transformations on training set
+bfy_enet_recipe |> prep() |> bake(bfy_train) |> head()
+
+# Define model
+bfy_enet_model <- 
+  linear_reg(penalty = tune(), mixture = tune()) |> 
+  set_engine("glmnet")
+
+# Create workflow
+bfy_enet_workflow <- 
+  workflow() |> 
+  add_model(bfy_enet_model) |> 
+  add_recipe(bfy_enet_recipe)
+
+############################## Hyperparameter Tuning ###########################
+# Create a set of Monte Carlo resamples
+bfy_enet_resamples <- 
+  mc_cv(
+    bfy_train, 
+    times = 1000, 
+    prop = 0.75
+  )
+
+# Create regular grid for tuning
+bfy_enet_regular_grid <- 
+  grid_regular(
+    extract_parameter_set_dials(bfy_enet_model), 
+    levels = 20
+  )
+
+# Train and tune the model
+train_model <- FALSE
+if(train_model){
+  # Mark start time
+  start_time <- Sys.time()
+  
+  # Run model on resampled data
+  bfy_enet_tune_results <- bfy_enet_workflow |> 
+    tune_grid(
+      resamples = bfy_enet_resamples, 
+      grid = bfy_enet_regular_grid
+    )
+
+  # Save tune results
+  save(bfy_enet_tune_results, file = bfy_enet_path)
+  
+  # Mark end time
+  end_time <- Sys.time()
+  
+  # Report run time
+  end_time - start_time
+} else {
+  # Load tune results if already created
+  load(bfy_enet_path)
+}
+
+############################## Finalize Model ##################################
+# Show hyperparameter tuning results
+bfy_enet_tune_results |> 
+  collect_metrics() |> 
+  filter(.metric == "rmse") |> 
+  arrange(mean)
+
+# Select the best performing model
+bfy_enet_best_params <- bfy_enet_tune_results |> 
+  select_best(metric = "rmse")
+
+# Finalize workflow
+bfy_enet_final_workflow <- bfy_enet_workflow |> 
+  finalize_workflow(bfy_enet_best_params)
+
+# Apply finalized model on training set and then compare it with testing set
+bfy_enet_final_model <- bfy_enet_final_workflow |> 
+  last_fit(bfy_split)
+
+# Evaluate final model performance on testing set
+bfy_enet_final_model_performance <- bfy_enet_final_model |> 
+  collect_metrics()
+```
+
+```{r}
+#| label: rf_model
+#| include: false
+############################## Build the Model #################################
+# Define formula for linear regression
+bfy_formula <- as.formula("CASQLANGA1 ~ .")
+
+# Define pre-processing steps
+bfy_rf_recipe <- bfy |> 
+  recipe(bfy_formula) |> 
+  update_role(CASQLANGA1, new_role = "outcome") |> 
+  update_role(PUBLICSAMPLEID, new_role = "id") |>
+  step_other(all_nominal_predictors(), threshold = 0.05) |> 
+  step_unknown(all_nominal_predictors()) |>
+  step_dummy(all_nominal_predictors()) |> 
+  step_naomit(all_outcomes()) |>
+  step_zv(all_predictors())
+
+# Apply transformations on training set and look at results
+bfy_rf_recipe |> prep() |> bake(bfy_train) |> head()
+
+# Define model
+bfy_rf_model <- 
+  rand_forest(
+    trees = 100, 
+    mtry = tune(), 
+    min_n = tune()
+  ) |> 
+  set_mode("regression") |> 
+  set_engine("ranger", importance = "impurity")
+
+# Create workflow
+bfy_workflow <- 
+  workflow() |> 
+  add_model(bfy_rf_model) |> 
+  add_recipe(bfy_rf_recipe)
+
+############################## Hyperparameter Tuning ###########################
+# Create a set of Monte Carlo resamples
+bfy_rf_resamples <- 
+  mc_cv(
+    bfy_train, 
+    times = 100, 
+    prop = 0.75
+  )
+
+# Create regular grid for tuning
+bfy_rf_regular_grid <- 
+  grid_regular(
+    mtry(range = c(10, 150)), 
+    min_n(), 
+    levels = 10
+  )
+
+# Train and tune the model
+train_model <- FALSE
+if(train_model){
+  # Mark start time
+  start_time <- Sys.time()
+  
+  # Parallel processing
+  doParallel::registerDoParallel()
+  
+  # Run model on the resampled data
+  bfy_rf_tune_results <- bfy_workflow |> 
+    tune_grid(
+      resamples = bfy_rf_resamples, 
+      grid = bfy_rf_regular_grid
+    )
+
+  # Save model fit
+  save(bfy_rf_tune_results, file = bfy_rf_path)
+  
+  # Mark end time
+  end_time <- Sys.time()
+  
+  # Report run time
+  end_time - start_time
+} else {
+  # Load model fit if already created
+  load(bfy_rf_path)
+}
+
+############################## Finalize Model ##################################
+# Show hyperparameter tuning results
+bfy_rf_tune_results |> 
+  collect_metrics() |> 
+  filter(.metric == "rmse") |> 
+  arrange(mean)
+
+# Select the best performing model
+bfy_rf_best_params <- bfy_rf_tune_results |> 
+  select_best(metric = "rmse")
+
+# Finalize workflow
+bfy_rf_final_workflow <- bfy_workflow |> 
+  finalize_workflow(bfy_rf_best_params)
+
+# Apply finalized model on training set and then compare it with testing set
+bfy_rf_final_model <- bfy_rf_final_workflow |> 
+  last_fit(bfy_split)
+
+# Evaluate final model performance on testing set
+bfy_rf_final_model_performance <- bfy_rf_final_model |> 
+  collect_metrics()
+```
+
+```{r}
+#| label: model_visualizations
+#| include: false
+############################## Hyperparameter tuning plots #####################
+# Line plot for elastic net hyperparameters
+fig_line_enet_tuning <- bfy_enet_tune_results |> 
+  collect_metrics() |> 
+  mutate(mixture = as_factor(round(mixture, 2))) |> 
+  filter(.metric == "rmse") |>
+  ggplot(aes(y = mean, x = penalty, color = mixture)) +
+  geom_point() +
+  geom_line(alpha = 0.5, size = 1.5) + 
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  scale_y_continuous(limits = c(0.87, 1.02), breaks = seq(0.87, 1.02, 0.01)) +
+  labs(x = "Penalty", y = "RMSE", color = "Mixture") +
+  theme_bw() +
+  theme(
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 8)
+  ) + 
+  guides(color = guide_legend(ncol = 2))
+
+# Line plot for random forest hyperparameters
+fig_line_rf_tuning <- bfy_rf_tune_results |>
+  collect_metrics() |> 
+  filter(.metric == "rmse") |> 
+  mutate(min_n = factor(min_n)) |> 
+  ggplot(aes(mtry, mean, color = min_n)) +
+  geom_point() +
+  geom_line(alpha = 0.5, size = 1.5) +
+  scale_x_continuous(limits = c(10, 150), breaks = seq(10, 150, 10)) +
+  scale_y_continuous(limits = c(0.87, 1.02), breaks = seq(0.87, 1.02, 0.01)) +
+  labs(y = "RMSE") +
+  theme_bw() + 
+  theme(
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 8)
+  )
+
+# Combine hyperparameter tuning plots into one figure
+fig_hyperparameter_performance <- 
+  fig_line_enet_tuning / fig_line_rf_tuning + 
+  plot_annotation(tag_levels = "A")
+
+############################## Variable Importance Plots #######################
+# Bar chart of top 10 variables from elastic net by coefficient magnitude
+fig_bar_enet_vi <- bfy_enet_final_workflow |> 
+  fit(data = bfy_train) |> 
+  extract_fit_parsnip() |> 
+  tidy() |> 
+  filter(!estimate == 0, !term == "(Intercept)") |> 
+  slice(1:10) |>
+  mutate(
+    term = case_when(
+      term == "SITE_NEA0" ~ "Site: Nebraska",
+      term == "CFEMALEA0" ~ "Child is Female",
+      term == "CBIRTHDIFFA0" ~ "Difference between child DOB and due date (days)",
+      term == "MASIANA0" ~ "Mother is Asian or Pacific Islander only and non-Hispanic",
+      term == "MRACEMULTIPLEA0" ~ "Mother is Multiple races and non-Hispanic",
+      term == "MCHILDCAREA0" ~ "Mother will have help with child care",
+      term == "DBLACKA0" ~ "Father is Black only and non-Hispanic",
+      term == "DRACEMULTIPLEA0" ~ "Father is multiple races and non-Hispanic",
+      term == "HHNRELATEDCHILDA0" ~ "Number of other children in the household, related/known",
+      term == "HHNOTHERCHILDA0" ~ "Number of children in the household, relationship not specified"
+    )
+  ) |> 
+  mutate(
+    estimate = abs(estimate),
+    term = fct_reorder(term, estimate)
+  ) |> 
+  arrange(desc(estimate)) |> 
+  ggplot(aes(x = estimate, y = term)) +
+  geom_col(alpha = 0.8, fill = "midnightblue") +
+  scale_x_continuous(limits = c(0, 0.028), breaks = seq(0, 0.025, 0.005)) +
+  labs(x = "Coefficient Estimates") + 
+  theme_bw() + 
+  theme(axis.title.y = element_blank())
+```
+
+# Introduction
+
+## Problem Statement
+
+Poverty and circumstances that give rise to it can significantly impact a child’s early development. Existing evidence suggest that children from low-income backgrounds perform consistently below their economically-advantaged peers on standardized language measures (@pace_identifying_2017; @romeo_language_2022). However, these studies have primarily focused on preschool children and these associations are not indicative of causality. There remain many open questions whether direct impacts on income can affect early childhood development.
+
+The Baby’s First Years (BFY) study is randomized controlled trial (RCT) that evaluates the causal impact of unconditional cash rewards on early development of infants in low-income families. Data from this study offer a unique opportunity to examine how socio-demographic factors influence language development in infants from disadvantaged backgrounds. In this study, we aim to leverage data from the BFY study to predict early language development in infants of low-income mothers using machine learning. Understanding how language develops among child from low-income families is crucial because language abilities is a strong predictor of later school readiness and success. Early disparities in language development may translate to persistent gaps in language ability that remain stable or widen over time.
+
+## Motivation and Use Cases
+
+Accurate prediction of infant language development using socio-demographic variables available at birth has wide-reaching practical implications. First, early childhood programs and developmental specialists can utilize the results of this research to identify infants from low-income families that may benefit from additional resources to support language development. In addition, policy makers can use the results of this research to advocate for unconditional cash transfer programs for low-income families. Above all, families that gain access to resources and support systems as a result of this work can help set their child up for future success from the very start of life.
+
+# Methods
+
+## Dataset Description
+
+The BFY study is an ongoing RCT in the U.S. designed to evaluate the causal impact of poverty reduction on a child's early development. Since its initiation in 2018, the BFY has recruited 1,000 mothers of infants with incomes below the federal poverty line across four diverse communities: New York City, New Orleans, the greater Omaha metropolitan area, and the Twin Cities of Minneapolis and St. Paul. Mothers were recruited from postpartum wards shortly after giving birth and received a monthly cash gift by debit card for the first 76 months of their child's life. Mothers were randomly assigned to one of two groups: (1) an experimental group (n = 400) receiving \$333 per month (\$3,996 per year) and (2) a control group (n = 600) receiving \$20 per month (\$240 per year). Importantly, participants did not lose eligibility to public benefits (e.g. Supplemental Nutrition Assistance Program, Head Start, or Medicaid) due to the cash reward. Families in the BFY study were involved in four waves of data collection. First, baseline data was collected in the hospital shortly after birth. Afterwards, in-person home visits were conducted when the child was 12 and 24 months of age. Lastly, a university-based laboratory visit was conducted when the child was 36 months of age (@noble_babys_2021).
+
+The inclusionary criteria were as follows: (1) mother’s self-reported income was below the federal poverty threshold in the previous calendar year; (2) mother was of legal age for informed consent; (3) infant was admitted to the newborn nursery and not requiring admittance to the intensive care unit; (4) mother was residing in the state of recruitment; (5) mother reported not being "highly likely" to move to a different state or country in the next 12 months; (6) infant was discharged in the custody of the mother; and (7) mother was either English or Spanish speaking (necessary for instruments of some child outcomes) (@noble_babys_2021).
+
+This analysis used self-reported surveys data collected at baseline including mother demographics, mother-father relationship, and public assistance as predictors of language outcome (**Table 1**). The outcome of interest was the communication subscale of the Ages and Stages Questionnaire, Third Editon (ASQ-3) collected at 12 months of age. The ASQ-3 is a validated parental development screening questionnaire designed to assess young children's progress across five key domains: Communication, Gross Motor, Fine Motor, Problem Solving, and Personal-Social. The communication domain specifically evaluates a child's ability to understand and use of both expressive and receptive language (e.g. “Does your baby make two similar sounds, such as ‘ba-ba’, ‘da-da’, or ‘ga-ga’?”). For each item, mothers reported the frequency that their child exhibit the language skill (0 = not at all, 1 = sometimes, 2 = regularly). Item scores were summed to calculate total raw scores and then were transformed into z-scores for analysis.
+
+```{r}
+#| label: table_1
+table_1 |> 
+  kbl(
+    caption = "Description of self-report survey measures and examples",
+    booktabs = TRUE,
+    linesep = ""
+  ) |> 
+  kable_styling(font_size = 10)
+```
+
+## Dataset Access and Cleaning
+
+The [BFY](https://www.childandfamilydataarchive.org/cfda/archives/cfda/studies/37871/summary) dataset was downloaded from the Child and Family Data Archive (CFData) platform. The CFData repository is maintained by Inter-university Consortium for Political and Social Research at the University of Michigan and is funded by the Office of Planning, Research, and Evaluation. This platform hosts over 400 datasets on wide variety of early care and education topics. Two Statistical Package for Social Science (SPSS) data files from the BFY dataset were used for analysis: the baseline dataset and age 1 dataset.
+
+The two datasets were first combined and cleaned before subsequent pre-processing steps. ASQ-3 communication scores were extracted from the age 1 dataset and merged with the baseline dataset by subject ID. Variables in the baseline data file are of two types – raw and generated. The raw variables were unprocessed, direct outputs the self-reported surveys. The generated variables were created by BFY analysts in preparation for data analysis. These variables were re-coded (e.g., yes/no responses are coded yes = 1 and no = 0). In addition, quality checks were conducted to create complicated generated variable. For example, some mothers reported unexpectedly high household incomes, and these mothers were recoded to the 99th percentile. 
+
+The merged dataset included 1,000 low-income mothers with newborns and initially comprised of 627 features. After removal of raw variables, 169 features remained. Descriptive statistics of the mothers are presented in **Table 2**. Prior to model training and tuning, a series of preprocessing steps were conducted. Two models were trained for the analyses: an elastic net model and a random forest model.
+
+For the elastic net model, the data were pre-processed as follows: (1) categorical levels constituting less than 1% of the data were grouped into an “other” category; (2) all categorical predictors were dummy-coded; (3) predictors with more than 10% missing data were removed; (4) missing values in categorical predictors were imputed using the training set mode; (5) missing values in numeric predictors were imputed using the training set mean; (6) observations with missing outcome values were removed; (7) predictors with zero variance were removed; (8) predictors with a correlation above 0.95 with any other predictor were removed; (9) all predictors were standardized to have a mean of 0 and a standard deviation of 1.
+
+For the random forest model, the data were pre-processed as follows: (1) categorical levels constituting less than 1% of the data were grouped into an “other” category; (2) missing values in categorical predictors were assigned to an “unknown” category; (3) all categorical variables were dummy-coded; (4) observations with missing outcome values were removed; (5) predictors with zero variance were removed.
+
+```{r}
+#| label: table_2
+#| echo: false
+table_2 |> 
+  as_kable_extra(
+    caption = "Descriptive statistics of mothers in the BFY study", 
+    booktabs = TRUE,
+    linesep = ""
+  ) |> 
+  kable_styling(font_size = 10)
+```
+
+# Exploratory Analyses
+
+## Univariate Analyses
+
+The distribution of z-scores for the ASQ-3 communication subscale is presented in **Figure 1**. The distribution is left skewed with a median [IQR] is 0.49 [-0.23 – 0.99]. A total of 600 infants scored greater than 1 SD below the mean, suggesting that their development is on schedule. Sixty-three infants scored between 1 and 2 SD below the mean. These children may benefit from more language activities and active monitoring on their developmental milestones. Ten infants scores more than 2 SD below the mean and may need further assessments with a professional.
+
+```{r}
+#| label: fig_rain_ASQ
+#| fig.width: 5.5
+#| fig.height: 3
+#| fig.cap: "Raincloud plot of ASQ-3 z-scores in the communication domain. This plot utilizes three different plots to illustrate overall shape and variability: a half violin plot representing the kernel density estimate at the top, a boxplot showing the median and interquartile range at the center, and jittered individual data points at the bottom."
+print(fig_rain_ASQ)
+```
+
+## Bivariate Analyses
+
+The bivariate relationships between four demographic predictors and ASQ-3 communication z-scores are depicted in **Figure 2**. The four demographic predictors examined included treatment group, maternal education, household combined income, and maternal depression. The bar plot comparing treatment group and ASQ-3 communication z-scores indicated that infants of mothers who received a high cash reward demonstrated more age-appropriate language skills compared to infants of mothers who received a low cash reward (**Figure 2A**). The bar plot between maternal education and ASQ-3 communication z-scores did not reveal any trend of age-appropriate language skills and maternal education. (**Figure 2B**). The scatterplot comparing household combined income and ASQ-3 communication z-scores appears to show a positive relationship. However, the upward trend is primarily driven by one outlier (**Figure 2C**). No linear or nonlinear trend was observed in the scatterplot between maternal depression and ASQ-3 communication z-score (**Figure 2D**).
+
+```{r}
+#| label: fig_bivariate
+#| message: false
+#| fig.cap: "(A) Bar plot of mean ASQ-3 communication z-scores by mothers who received a high cash reward versus a low cash reward. (B) Bar plot of mean ASQ-3 communication z-scores by different levels of maternal education. Bachelor's (+) represents Bachelor's degree or higher. High school (-) represents less than high school. (C) Scatter plot of ASQ-3 communication z-scores as a function of household combined income. (D) Scatter plot of ASQ-3 communication z-scores as a function of maternal depression. Maternal depression was measured by the Center for Epidemiologic Studies Depression Scale (CES-D). A loess curve was fitted to each scatterplot."
+print(fig_bivariate)
+```
+
+# Model Development
+
+## Model Selection
+
+The current dataset is characterized by a relatively low number of cases (< 2,000) and a relatively high number of features (> 50). Given these characteristics, two models were selected for analysis: an elastic net model and a random forest model. An elastic net model was chosen for its ability to handle datasets with smaller sample sizes, compared to models such as XGBoost or neural nets that require larger sample sizes. Moreover, elastic net combines both L1 (lasso) and L2 (ridge) regularization to simultaneously shrink coefficients and perform variable selection, making it a versatile approach for datasets with many features. Elastic net models also produce more interpretable results.
+
+Although random forest models generally perform better with larger sample sizes, this model was chosen for analysis for several reasons. First, a random forest model can effectively handle datasets with a large number of features and can capture complex nonlinear relationships between predictors. The model is also robust to missing data and can even incorporate it during training. Lastly, random forests require minimal preprocessing of data and does not make assumptions about data distribution.
+
+## Hyperparameter Tuning
+
+To train and tune the elastic net model, cross-validation was performed using a Monte Carlo resampling approach with 1,000 iterations to obtain more reliable performance estimates. In each resample, 75% of the data was randomly chosen without replacement to train the model, while the remaining 25% served as the validation set. A regular grid search was conducted across 20 levels for each of the two key hyperparameters: mixture, which determines the balance between L1 and L2 regularization; and penalty, which determines the overall strength of regularization. For each resample, elastic net models were fitted across 400 (20x20) combinations of penalty and mixture. Model performance was evaluated using root mean squared error (RMSE) on the validation data. Final model selection was based on the combination of penalty and mixture yielding the lowest average RMSE across resamples.
+
+For the random forest model, cross-validation was similarly performed using a Monte Carlo resampling approach, but with 100 iterations. In each resample, 75% of the data was randomly selected for training, and 25% for validation. Each random forest consisted of 100 trees. A regular grid search was implemented across 10 levels for two key hyperparameters: mtry, the number of predictors randomly sampled at each split (ranging from 10 to 150); and min_n, the minimum number of observations needed to keep splitting nodes. For each resample, the random forest models were fitted across 100 (10x10) combinations of mtry and min_n values. Model performance was evaluated using RMSE on the validation data. Final model selection was based on the combination of mtry and min_n values yielding the lowest average RMSE across resamples.
+
+```{r}
+#| label: fig_hyperparameter_performance
+#| fig.height: 5
+#| fig.cap: "(A) Line plot of elastic net model performance across multiple hyperparameter combinations. (B) Line plot of random forest model performance across multiple hyperparameter combinations."
+print(fig_hyperparameter_performance)
+```
+
+Visualizations of model performance for the elastic net and random forest models across multiple hyperparameter combinations are shown in **Figure 3**. Results of tuning process for the elastic net model indicated that model performance is generally better at higher values of penalty. Higher mixture values also lead to improved model performance. The elastic net model that yielded the best model performance (RMSE = 0.877) during training had a penalty value of 1 and mixture value of 0.05 (**Figure 3A**). Results of the tuning process for the random forest model revealed that smaller values of mtry and larger values of min_n optimized model performance. The random forest model that yielded the best model performance (RMSE = 0.886) during training had a mtry value of 10 and min_n value of 40 (**Figure 3B**). These results suggest that the elastic net model performed better than the random forest model during training.
+
+# Model Performance
+
+## Evaluation on Held-out Testing Set between Models
+
+A quarter of the initial dataset was reserved as the testing set. The elastic net model yielded a RMSE value of 0.841 on the testing set using the combination of best hyperparameters (penalty = 1; mixture = 0.05). The random forest model yielded a RMSE value of 0.853 using the combination of best hyperparameters (mtry = 2; min_n = 40). This result suggests that the elastic net model performed better than the random forest model and will be used as the final model for predicting language development among infants of low-income parents.
+
+# Final Model Interpretation
+
+## Characteristics of Final Model
+
+The final elastic net model was fitted to predict standardized ASQ-3 communication scores using 110 predictors. The model used a penalty value of 1 and a mixture vale of 0.05. Given the regular grid search only assessed penalty values between 0 and 1, selection of the highest penalty value indicates that strong regularization was important for optimizing model performance. The low mixture value positioned the model close to ridge regression while allowing for limited variable selection. Variable estimates extracted from the final model revealed that only 16 predictors retained non-zero coefficients. This result may suggest that most predictors in the dataset were weak predictors of language development; and the combination of strong regularization and a small lasso component contributed to the exclusion of those variables. In addition, the results indicate that a parsimonious model can achieve good model performance.
+
+```{r}
+#| label: fig_bar_enet_vi
+#| fig.height: 4
+#| fig.cap: "(A) Bar plot of coefficient estimate magnitudes for the elastic net model. (B) Bar plot of variable importance for the random forest model. DOB = Date of Birth."
+print(fig_bar_enet_vi)
+```
+
+However, the RMSE for the final model was 0.841 for predicting ASQ-3 communication z-scores. This result indicates that the model’s predictions deviate by 0.841 SDs from the actual values and does not reflect good model performance. The 10 predictors with the largest coefficient magnitudes are shown in **Figure 4**. The most important predictors of ASQ-3 communication z-scores were whether data collection occurred in Omaha, Nebraska, the child's sex, and the number of children in the household.
+
+# Implications and Use Cases Revisited
+
+## Applications in Practice
+
+Although the final model demonstrated poor predictive performance and is not recommended for deployment, the variables identified as important may still offer valuable insights. For example, the elastic net model highlighted child sex as a key predictor. This suggests that parents and developmental specialists might consider providing additional language activities for boys to support their early language development. Furthermore, the number of children in the household emerged as another important factor. Infants living without other children in the household may benefit from increased frequency of social interaction with peers to promote language skills.
+
+## Limitations and Future Work
+
+Several limitations should be considered when interpreting the findings of this study. First, the analysis was restricted to socio-demographic variables collected at birth. Given that language development is shaped by social interactions and environmental factors, variables measured after birth, such as home literacy environment or frequency of peer interactions may be stronger predictors of language outcomes. Additionally, the current analysis did not include interaction terms and may have potentially overlooked important moderating effects among socio-demographic factors. Future work could apply causal machine learning approaches to better understand the effects of unconditional cash transfers on language development. Exploring alternative hyperparameter optimization strategies, such as Bayesian optimization or simulated annealing, may also improve model performance.
+
+\ 

@@ -1,0 +1,35 @@
+---
+title: "Final Project Check-In 1: Identifying Your Topic, Outcome, and Dataset"
+author: "Isaac Chen"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: html_document
+---
+
+Your submission should include the following:
+
+#### 1. **General Topic Area**:
+
+-   One to two sentences describing the broad domain of your project.
+
+The overall domain of my project will be assessing the influence of environmental factors on a child's early cognitive development.
+
+\ 
+
+#### 2. **Outcome Variable**:
+
+-   One paragraph describing your chosen outcome, why it matters, and how it aligns with your topic area.
+
+One outcome of interest is the communication subtest of the Ages and Stages Questionnaire (ASQ). This subtest measures children’s language skills and includes what they can say and what they can understand. Understanding early language development is crucial because it is strongly linked to their reading proficiency later in school. Socioeconomic status (SES) may be a factor that affects a child's early language abilities because they may not be exposed to an environment filled with literacy interactions or opportunities to listen and use the language constantly. A child who enters school without essential building blocks for learning how to read may be at risk for falling behind their peers.
+
+\ 
+
+#### 3. **Dataset**:
+
+-   Name and description of the dataset.
+-   Source of the dataset (e.g., URL or organization).
+-   Brief explanation of why you believe this dataset is appropriate for your project.
+
+The dataset I plan to analyze is called [Baby's First Years (BFY)](https://www.childandfamilydataarchive.org/cfda/archives/cfda/studies/37871/summary). The Baby's First Years project is the first randomized controlled trial to provide estimates of the causal impacts of unconditional cash gifts on the cognitive, socio-emotional, and brain development of infants and young children in low-income U.S. families. This study recruited 1,000 mothers of infants with incomes below the poverty line across four locations in the U.S (NYC, New Orleans, Omaha, and Twin Cities). Mothers were divided into two groups: a high cash group (n = 400) who receives 333 dollars per month and a low cash group (n = 600) who receives 20 dollars per month. The study aims to follow children from birth to 8 years old. Currently, data is available for children between ages 1 to 3. Regarding the size of the dataset, the `baseline (at birth) dataset` has 1050 participants for 626 variables. The `Age 1 dataset` includes 1000 participants for 2010 variables. The `Age 2 dataset` includes 1000 participants for 1210 variables. The `Age 3 dataset` includes 1000 participants for 1961 variables.
+
+I believe this dataset is appropriate for my project because it is large scale dataset with diverse populations that seeks to understand the role household income on early childhood development. Additionally, randomized controlled trial design may allow us to better understand the causal role of income in contributing to disparities in child performance.
+

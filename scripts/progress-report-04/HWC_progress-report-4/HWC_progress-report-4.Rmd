@@ -1,0 +1,655 @@
+---
+# Supported options: 
+#   sn-nature:       Style for submissions to Nature Portfolio journals
+#   sn-basic:        Basic Springer Nature Reference Style/Chemistry Reference Style
+#   sn-mathphys:     Math and Physical Sciences Reference Style
+#   sn-aps:          American Physical Society (APS) Reference Style
+#   sn-vancouver:    Vancouver Reference Style
+#   sn-apa:          APA Reference Style 
+#   sn-chicago:      Chicago-based Humanities Reference Style
+#   default:         Default
+
+classoptions: 
+  - sn-basic      
+  # - Numbered      # Optional: Use numbered references instead of namedate references (only for sn-nature, sn-basic, sn-vancouver, sn-chicago, sn-mathphys or sn-nature)
+  # - referee       # Optional: Use double line spacing 
+  # - lineno        # Optional: Add line numbers
+  # - iicol         # Optional: Double column layour
+
+title: "Predicting Language Outcomes for 12-month-old Infants From Low-Income Families: A Machine Learning Approach based on Demographics Data at Birth"
+
+authors: 
+  - firstname: Hsuan-Wei
+    particle: (Isaac) 
+    lastname: Chen
+    email: hsuan-wei.chen@vanderbilt.edu
+    affiliation: 1
+    corresponding: TRUE
+    equalcont: These authors contributed equally to this work.
+    
+  - firstname: William
+    particle: R. 
+    lastname: Doyle
+    affiliation: 2
+    equalcont: These authors contributed equally to this work.
+
+affiliations:
+  - number: 1
+    corresponding: TRUE
+    info:
+      orgdiv: Department of Psychology and Human Development
+      orgname: Vanderbilt University
+    address:
+        city: Nashville
+        state: TN
+        country: USA
+  - number: 2
+    info:
+      orgdiv: Department of Leadership, Policy and Organizations
+      orgname: Vanderbilt University
+    address:
+        city: Nashville
+        state: TN
+        country: USA
+    
+keywords:
+  - language
+  - early childhood development
+  - low-income familites
+  - machine learning
+
+abstract: |
+  **Purpose**: The abstract serves both as a general introduction to the topic and as a brief, non-technical summary of the main results and their implications. The abstract must not include subheadings (unless expressly permitted in the journal's Instructions to Authors), equations or citations. As a guide the abstract should not exceed 200 words. Most journals do not set a hard limit however authors are advised to check the author instructions for the journal they are submitting to.
+
+header-includes:
+  - \setcounter{secnumdepth}{0}
+  
+bibliography: bibliography.bib
+output: rticles::springer_article
+---
+
+```{r}
+#| label: setup
+#| include: false
+# Global settings for all chunks 
+knitr::opts_chunk$set(
+    echo = FALSE, 
+    fig.align = "center",
+    fig.pos = "H",
+    fig.width = 5.5,
+    fig.height = 3
+  )
+
+# Clear all the variables in the environment
+rm(list = ls())
+
+# Print warnings immediately as they come up for troubleshooting purposes
+options(warn = 1)
+
+# Load packages
+library(here) # Find files relative to my project root
+library(haven) # Read in SPSS datasets
+library(tidyverse) # Organize and clean data
+library(tidymodels) # Modeling and machine learning
+library(ggrain) # Create raincloud plots
+library(ranger) # Engine for random forest model
+library(knitr) # Format tables
+```
+
+```{r}
+#| label: load_data
+#| include: false
+# Define paths to SPSS data files
+baseline_path <- here("data", "ICPSR_37871", "DS0001", "37871-0001-Data.sav")
+age1_path <- here("data", "ICPSR_37871", "DS0002", "37871-0002-Data.sav")
+
+# Read data
+baseline <- read_sav(baseline_path)
+age1 <- read_sav(age1_path)
+```
+
+```{r}
+#| label: clean_data
+#| include: false
+# Combine language outcome from age 1 dataset with baseline dataset based on ID
+age1 <- age1 |> 
+  select(PUBLICSAMPLEID, CASQLANGA1)
+
+# Join by keeping all observations in age 1 data
+bfy <- baseline |> 
+  right_join(age1, by = join_by(PUBLICSAMPLEID))
+
+################################################################################
+# The BFY dataset includes both raw and generated variables. Generated variables
+# were created by the BFY study staff. The user guide recommends analysts to 
+# use these variables for analysis because they have been cleaned and are easier 
+# to use.
+################################################################################
+
+# Function to look for variable labels with [Raw]
+raw_label <- function(x) {
+  grepl("\\[Raw\\]", attr(x, "label"))
+}
+
+# Remove raw variables based on variable label [Raw]
+# Convert variables to numeric
+bfy <- bfy |>
+  select(where(~ !raw_label(.))) |> 
+  mutate(across(where(is.labelled), as.numeric))
+```
+
+```{r}
+#| label: exploratory_analyses
+#| include: false
+############################## Univariate plots ################################
+# Raincloud plot for ASQ scores
+fig_rain_ASQ <- bfy |> 
+  filter(!is.na(CASQLANGA1)) |> 
+  ggplot(aes(1, CASQLANGA1)) + 
+  geom_rain(
+    likert = TRUE,
+    violin.args = list(alpha = 0.5, color =  "#1e90ff", fill = "#1e90ff"), 
+    point.args = list(alpha = 0.5, color =  "#1e90ff"),
+    boxplot.args = list(alpha = 0.5, color = "#1e90ff", outlier.shape = NA)
+  ) + 
+  scale_x_continuous(limits = c(0.9, 1.5)) + 
+  scale_y_continuous(limits = c(-3.5, 1.5), breaks = seq(-3, 1.5, 0.5)) + 
+  labs(y = "ASQ Communication Langauge Scores (Standardized)") + 
+  theme_bw() + 
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank()
+  ) +
+  coord_flip()
+
+############################## Bivariate plots #################################
+# Bar chart of treatment group and ASQ scores
+fig_bar_treat_ASQ <- bfy |> 
+  mutate(
+    TREATA0 = ifelse(TREATA0 == 1, "High Cash Gift", "Low Cash Gift"),
+    TREATA0 = factor(TREATA0)
+  ) |> 
+  group_by(TREATA0) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = fct_rev(TREATA0), y = mean, fill = TREATA0)) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.3)) +
+  scale_y_continuous(limits = c(0, 0.5), breaks = seq(0, 0.5, 0.1)) + 
+  scale_fill_brewer(palette = 'Dark2') + 
+  labs(
+    fill = "Treatment group",
+    y = "Mean ASQ Communication Langauge Scores (Standardized)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "inside",
+    legend.position.inside = c(0.85, 0.8),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank()
+  ) +
+  coord_flip()
+
+# Bar chart of sex and ASQ scores
+fig_bar_sex_ASQ <- bfy |> 
+  mutate(
+    CFEMALEA0 = ifelse(CFEMALEA0 == 1, "Female", "Male"),
+    CFEMALEA0 = factor(CFEMALEA0)
+  ) |> 
+  group_by(CFEMALEA0) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = fct_rev(CFEMALEA0), y = mean, fill = CFEMALEA0)) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.3)) +
+  scale_y_continuous(limits = c(0, 0.5), breaks = seq(0, 0.5, 0.1)) + 
+  labs(
+    fill = "Sex",
+    y = "Mean ASQ Communication Langauge Scores (Standardized)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "inside",
+    legend.position.inside = c(0.85, 0.8),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank()
+  ) +
+  coord_flip()
+
+# Bar chart of Mother Educational Level and ASQ scores
+fig_bar_medu_ASQ <- bfy |> 
+  filter(!is.na(MEDLEVELA0)) |> 
+  mutate(
+    MEDLEVELA0 = factor(
+      MEDLEVELA0,
+      levels = c(5, 4, 3, 2, 1),
+      labels = c(
+        "Bachelor's or higher", 
+        "Associate's", 
+        "Some college", 
+        "High school or GED", 
+        "Less than high school"
+      )
+    )
+  ) |> 
+  group_by(MEDLEVELA0) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = fct_rev(MEDLEVELA0), y = mean, fill = MEDLEVELA0)) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.3)) +
+  scale_y_continuous(limits = c(0, 0.5), breaks = seq(0, 0.5, 0.1)) + 
+  labs(
+    fill = "Maternal Education",
+    y = "Mean ASQ Communication Langauge Scores (Standardized)"
+  ) +
+  coord_flip() +
+  theme_bw() +
+  theme(
+    legend.position = "inside",
+    legend.position.inside = c(0.83, 0.68),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank()
+  )
+```
+
+```{r}
+#| label: enet_model
+#| include: false
+############################## Build the Model #################################
+# Create reproducible results
+set.seed(1234)
+
+# Split data into training set (75%) and testing set (25%)
+bfy_split <- initial_split(bfy)
+bfy_train <- training(bfy_split)
+bfy_test <- testing(bfy_split)
+
+# Define formula
+bfy_formula <- as.formula("CASQLANGA1 ~ .")
+
+# Define pre-processing steps
+bfy_enet_recipe <- bfy |> 
+  recipe(bfy_formula) |> 
+  update_role(CASQLANGA1, new_role = "outcome") |> 
+  update_role(PUBLICSAMPLEID, new_role = "id") |>
+  step_other(all_nominal_predictors(), threshold = 0.01) |> 
+  step_dummy(all_nominal_predictors()) |> 
+  step_filter_missing(all_predictors(), threshold = 0.1) |> 
+  step_impute_mean(all_numeric_predictors()) |> 
+  step_naomit(all_outcomes()) |> 
+  step_zv(all_predictors()) |> 
+  step_corr(all_predictors(), threshold = 0.95) |> 
+  step_normalize(all_predictors())
+
+# Apply transformations on training set
+bfy_enet_recipe |> prep() |> bake(bfy_train) |> head()
+
+# Define model
+bfy_enet_model <- 
+  linear_reg(penalty = tune(), mixture = tune()) |> 
+  set_engine("glmnet")
+
+# Create workflow
+bfy_enet_workflow <- 
+  workflow() |> 
+  add_model(bfy_enet_model) |> 
+  add_recipe(bfy_enet_recipe)
+
+############################## Hyperparameter Training #########################
+# Create a set of Monte Carlo resamples
+bfy_enet_resamples <- mc_cv(bfy_train, times = 25, prop = 0.75)
+
+# Create regular grid for tuning
+bfy_enet_regular_grid <- 
+  grid_regular(
+    extract_parameter_set_dials(bfy_enet_model), 
+    levels = 500
+  )
+
+# Train and tune the model
+train_model <- FALSE
+if(train_model){
+  # Mark start time
+  start_time <- Sys.time()
+  
+  # Run model on resampled data
+  bfy_enet_tune_results <- bfy_enet_workflow |> 
+    tune_grid(
+      resamples = bfy_enet_resamples, 
+      grid = bfy_enet_regular_grid
+    )
+
+  # Save tune results
+  bfy_enet_path <- here("final_paper", "bfy_enet_tune_results.Rdata")
+  save(bfy_enet_tune_results, file = bfy_enet_path)
+  
+  # Mark end time
+  end_time <- Sys.time()
+  
+  # Report run time
+  end_time - start_time
+} else {
+  # Load tune results if already created
+  bfy_enet_path <- here("final_paper", "bfy_enet_tune_results.Rdata")
+  load(bfy_enet_path)
+}
+
+############################## Finalize Model  #################################
+# Examine model performance
+bfy_enet_tune_results |> 
+  collect_metrics() |> 
+  filter(.metric == "rmse") |> 
+  arrange(mean)
+
+# Plot of hyperparameters
+#fig_metrics <- bfy_enet_tune_results |> 
+#  collect_metrics() |> 
+#  mutate(mixture = as_factor(round(mixture, 2))) |> 
+#  filter(.metric == "rmse") |> 
+#  rename_with(~str_to_title(.)) |> 
+#  rename(RMSE = Mean) |>
+#  ggplot(aes(y = RMSE, x = Penalty, color = Mixture)) +
+#  geom_line()+
+#  facet_wrap(~ Mixture, nrow = 2) +
+#  theme_minimal()
+
+# Select the best performing model
+bfy_enet_best_params <- bfy_enet_tune_results |> 
+  select_best(metric = "rmse")
+
+# Finalize workflow
+bfy_enet_final_workflow <- bfy_enet_workflow |>
+  finalize_workflow(bfy_enet_best_params)
+
+# Apply finalized model on training set and then compare it with testing set
+bfy_enet_final_model <- bfy_enet_final_workflow |> 
+  last_fit(bfy_split)
+
+# Evaluate final model performance on testing set
+bfy_enet_final_model |> collect_metrics()
+
+# Extract variable estimates
+bfy_enet_final_model |> 
+  extract_fit_parsnip() |>  
+  tidy() |> 
+  arrange(-estimate)
+```
+
+```{r}
+#| label: rf_model
+#| include: false
+############################## Build the Model #################################
+# Create reproducible results
+set.seed(1234)
+
+# Split data into training set (75%) and testing set (25%)
+bfy_split <- initial_split(bfy)
+bfy_train <- training(bfy_split)
+bfy_test <- testing(bfy_split)
+
+# Define formula for linear regression
+bfy_formula <- as.formula("CASQLANGA1 ~ .")
+
+# Define pre-processing steps
+bfy_rf_recipe <- bfy |> 
+  recipe(bfy_formula) |> 
+  update_role(CASQLANGA1, new_role = "outcome") |> 
+  update_role(PUBLICSAMPLEID, new_role = "id") |>
+  step_other(all_nominal_predictors(), threshold = 0.01) |> 
+  step_dummy(all_nominal_predictors()) |> 
+  step_filter_missing(all_predictors(), threshold = 0.1) |> 
+  step_impute_mean(all_numeric_predictors()) |> 
+  step_naomit(all_outcomes()) |> 
+  step_zv(all_predictors())
+
+# Apply transformations on training set and look at results
+bfy_rf_recipe |> prep() |> bake(bfy_train) |> head()
+
+# Define model
+bfy_rf_model <- rand_forest(
+    trees = 1000,
+    mtry = tune(),
+    min_n = tune()
+  ) |> 
+  set_mode("regression") |> 
+  set_engine("ranger")
+
+# Create workflow
+bfy_workflow <- 
+  workflow() |> 
+  add_model(bfy_rf_model) |> 
+  add_recipe(bfy_rf_recipe)
+
+############################## Hyperparameter Training #########################
+# Create a set of Monte Carlo resamples
+bfy_rf_resamples <- mc_cv(bfy_train, times = 25, prop = 0.75)
+
+# Create regular grid for tuning
+bfy_rf_regular_grid <- grid_regular(
+    mtry(range = c(10, 100)), 
+    min_n(), 
+    levels = 50
+  )
+
+# Train and tune the model
+train_model <- FALSE
+if(train_model){
+  # Mark start time
+  start_time <- Sys.time()
+  
+  # Run model on the resampled data
+  bfy_rf_tune_results <- bfy_workflow |> 
+    tune_grid(
+      resamples = bfy_rf_resamples, 
+      grid = bfy_rf_regular_grid
+    )
+
+  # Save model fit
+  bfy_rf_path <- here("final_paper", "bfy_rf_tune_results.Rdata")
+  save(bfy_rf_tune_results, file = bfy_rf_path)
+  
+  # Mark end time
+  end_time <- Sys.time()
+  
+  # Report run time
+  end_time - start_time
+} else {
+  # Load model fit if already created
+  bfy_rf_path <- here("final_paper", "bfy_rf_tune_results.Rdata")
+  load(bfy_rf_path)
+}
+############################## Finalize Model  #################################
+# Examine model performance
+bfy_rf_tune_results |> 
+  collect_metrics() |> 
+  filter(.metric == "rmse") |> 
+  arrange(mean)
+
+# Select the best performing model
+bfy_rf_best_params <- bfy_rf_tune_results |> 
+  select_best(metric = "rmse")
+
+# Finalize workflow
+bfy_rf_final_workflow <- bfy_workflow |> 
+  finalize_workflow(bfy_rf_best_params)
+
+# Apply finalized model on training set and then compare it with testing set
+bfy_rf_final_model <- bfy_rf_final_workflow |> 
+  last_fit(bfy_split)
+
+# Evaluate final model performance on testing set
+bfy_rf_final_model |> 
+  collect_metrics()
+```
+
+\newgeometry{top=1in, bottom=1in, left=1in, right=1in}
+
+# Introduction
+
+- Problem statement: The object of this study is to predict ASQ communication language scores based on demographic variables collected at birth in low-income families
+- Understanding early language development is crucial because it is strongly linked to their reading proficiency later in school. Socioeconomic status (SES) may be a factor that affects a child's early language abilities because they may not be exposed to an environment filled with literacy interactions or opportunities to listen and use the language constantly. A child who enters school without essential building blocks for learning how to read may be at risk for falling behind their peers.
+
+# Methods
+
+## Dataset Description
+
+The Baby's First Years (BFY) project is first randomized controlled trial (RCT) in the U.S. designed to evaluate the causal impact of poverty reduction on a child's early development. Since its initiation in 2018, the BFY has recruited 1,000 mothers of infants with incomes below the federal poverty line across four diverse communities: New York City, New Orleans, the greater Omaha metropolitan area, and the Twin Cities. Mothers were recruited from postpartum wards shortly after giving birth and received a monthly cash gift by debit card for the first 76 months of their child's life. Mothers were randomly assigned to one of two groups: (1) an experimental group (n = 400) receiving \$333 per month (\$3,996 per year) and (2) a control group (n = 600) receiving \$20 per month (\$240 per year). Importantly, participants did not lose eligibility to public benefits (e.g. Supplemental Nutrition Assistance Program, Head Start, or Medicaid) due to the cash reward (@noble_babys_2021).
+
+The inclusionary criteria was the following: (1) mother’s self-reported income was below the federal poverty threshold in the previous calendar year; (2) mother was of legal age for informed consent; (3) infant was admitted to the newborn nursery and not requiring admittance to the intensive care unit; (4) mother was residing in the state of recruitment; (5) mother reported not being "highly likely" to move to a different state or country in the next 12 months; (6) infant was discharged in the custody of the mother; and (7) mother was either English or Spanish speaking (necessary for instruments of some child outcomes) (@noble_babys_2021).
+
+Families in the BFY study were involved in four waves of data collection. First, baseline data was collected in the hospital shortly after birth. Afterwards, in-person home visits were conducted when the child was 12 and 24 months of age. Lastly, a university-based laboratory visit was conducted when the child was 36 months of age. This analysis used self-reported surveys data collected at baseline including mother demographics, mother-father relationship, and public assistance as predictors of language outcome (**Table 1**). The language outcome of interest was the communication subtest of the Ages and Stages Questionnaire (ASQ) collected at 12 months of age. The ASQ is a developmental screening tool designed to assess young children's progress across five key domains: Communication, Gross Motor, Fine Motor, Problem Solving, and Personal-Social. The Communication domain specifically evaluates a child's ability to understand and use of both expressive and receptive language.
+
+```{r}
+#| label: table_1
+# Create dataframe for table 1
+table_1 <- data.frame(
+    Measure = c(
+      "Child Information", 
+      "Mother Demographics", 
+      "Father Demographics",
+      "Mother-Father Relationship", 
+      "Household Roster", 
+      "Income/Net Worth",
+      "Public Assistance", 
+      "Maternal Health"
+    ),
+    "Survey Question Example" = c(
+      "Child is female (Yes/No)", 
+      "Mother's has unpaid maternity leave (Yes/No)", 
+      "Father's highest level of educaion attained (Multinomial)",
+      "Biological dad put money towards baby's arrival (Yes/No)", 
+      "Number of adults in the household including mother (Continuous)", 
+      "Household combined calculated income (Continuous)",
+      "Household receives child care subsidy (Yes/No)", 
+      "Average alcohol drinks per week during pregnancy (Continous)"
+    ),
+    check.names = FALSE
+  )
+
+table_1 |> 
+  kable(caption = "Description of self-report survey measures and examples")
+```
+
+## Dataset Access and Cleaning
+
+-   [Baby's First Years (BFY) Data Access](https://www.childandfamilydataarchive.org/cfda/archives/cfda/studies/37871/summary)
+-   SPSS data file were download via package *Haven*
+-   Variables in the baseline data file are of two types – **raw** and **generated**. The first type of variables is considered raw because they are direct outputs from self-reported surveys. They are unprocessed.
+-   The second (**generated**) type of variables in the Baseline_Clean_Data_BFY data file are generated by BFY analysts in preparation for analyses of the data. These variables are re-coded (e.g., yes/no responses are coded yes=1 and no=0). In addition to simple recoding of values, a number of quality checks were conducted to create complicated generated variables, such as income, that required analytic decisions.
+-   The user guide recommends analysts to use the generated variables
+
+**Cleaning**
+
+-   Raw variables were removed based on variable labels from SPSS file
+-   Variables were converted to numeric
+
+**Elastic net Pre-processing**
+
+1. step_other(all_nominal_predictors(), threshold = 0.01) - any categories that constitute less than 1% of the data will be lumped into the category "other"
+
+2. step_dummy(all_nominal_predictors()) - converts categorical variables into dummy variables
+
+3. step_filter_missing(all_predictors(), threshold = 0.1) - removes any predictor variables that have more than 10% missing values 
+
+4. step_impute_mean(all_numeric_predictors()) - substitute missing values of numeric variables by the training set mean of those variables
+
+5. step_naomit(all_outcomes()) - Removes cases where the otucome has missing values
+
+6. step_zv(all_predictors()) - Removes predictor variables that have a zero variance, meaning they have the same value for all observations 
+
+7. step_corr(all_predictors(), threshold = 0.95) - Identifies and removes predictor variables that have a correlation higher than 0.95 with any other predictor 
+
+8. step_normalize(all_predictors()) - Normalizes all predictor variables so they have a mean of 0 and a standard deviation of 1.
+
+**Random Forest Pre-processing**
+
+1. step_other(all_nominal_predictors(), threshold = 0.01) - any categories that constitute less than 1% of the data will be lumped into the category "other"
+
+2. step_dummy(all_nominal_predictors()) - converts categorical variables into dummy variables
+
+3. step_filter_missing(all_predictors(), threshold = 0.1) - removes any predictor variables that have more than 10% missing values 
+
+4. step_impute_mean(all_numeric_predictors()) - substitute missing values of numeric variables by the training set mean of those variables
+
+5. step_naomit(all_outcomes()) - Removes cases where the otucome has missing values
+
+6. step_zv(all_predictors()) - Removes predictor variables that have a zero variance, meaning they have the same value for all observations 
+
+# Exploratory Analyses
+
+## Univariate Analyses
+
+```{r}
+#| label: fig_rain_ASQ
+#| fig.cap: "Distribution of ASQ communication language scores"
+print(fig_rain_ASQ)
+```
+
+## Bivariate Analyses
+
+```{r}
+#| label: fig_bar_treat_ASQ
+#| fig.cap: "Mean ASQ communication language scores by Treatment Group"
+print(fig_bar_treat_ASQ)
+```
+
+```{r}
+#| label: fig_bar_sex_ASQ
+#| fig.cap: "Mean ASQ communication language scores by Sex"
+print(fig_bar_sex_ASQ)
+```
+
+```{r}
+#| label: fig_bar_medu_ASQ
+#| fig.cap: "Mean ASQ communication language scores by Maternal Education"
+print(fig_bar_medu_ASQ)
+```
+
+# Model Development
+
+## Model Selection
+
+-   Elastic net was chosen because of number of cases was low (\<2,000).
+-   Random forest was also chosen because high number of features (\~170)
+
+## Hyperparameter Tuning
+
+- Elastic net
+  - Monte Carlo resamples
+  - Regular grid research with 500 levels for both mixture and penalty 
+  - Evaluation metric was RMSE
+
+- Random Forest
+  - Monte Carlo resamples
+  - 1000 trees
+  - Regular grid research with 50 levels for mtry (between 10 to 100) and min_n
+  - Evaluation metric was RMSE
+
+# Model Performance
+
+- RMSE was used as the performance metric
+
+## Evaluation on Testing Set
+
+Elastic net final model performance on testing set:
+
+```{r}
+# Final model performance
+bfy_enet_final_model |> collect_metrics()
+```
+
+## (Optional) Comparison Across Models
+
+-   Compare the elastic net model results with a random forest model.
+
+# Discussion
+
+## Implications and Use Cases Revisited
+
+## Limitations and Future Work
+
+# Appendix
+
+\ 

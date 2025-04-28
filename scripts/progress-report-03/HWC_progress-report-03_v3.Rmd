@@ -1,0 +1,297 @@
+---
+title: "Final Project Project Report 3 (Random Forest)"
+author: "Isaac Chen"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+---
+
+## Setup
+
+```{r}
+#| label: setup
+#| message: false
+
+# Clear all the variables in the environment
+rm(list = ls())
+
+# Print warnings immediately as they come up for troubleshooting purposes
+options(warn = 1)
+
+# Load packages
+library(here) # Used to find files relative to my project root
+library(haven) # Used to read in SPSS datasets
+library(tidyverse) # Used to tidying data
+library(tidymodels) # Used for modeling and machine learning
+library(skimr) # Used to create data summary
+library(ggrain) # Used to create raincloud plots
+library(rpart) # Used to implement decision tree
+library(rpart.plot) # Visualize classification tree
+library(ranger) # Used to implement random forest
+
+# For reproducibility
+set.seed(123)
+```
+
+## Objective
+
+Data for this project comes from the [Baby's First Years (BFY)](https://www.childandfamilydataarchive.org/cfda/archives/cfda/studies/37871/summary) project. The objective of this project is to use demographic and background characters collected shortly after birth to predict language skills at age 1.
+
+## Load Data
+
+```{r}
+#| label: load_data
+# Define paths to R data files
+baseline_path <- here("data", "ICPSR_37871", "DS0001", "37871-0001-Data.sav")
+age1_path <- here("data", "ICPSR_37871", "DS0002", "37871-0002-Data.sav")
+
+baseline <- read_sav(baseline_path)
+age1 <- read_sav(age1_path)
+```
+
+## Data cleaning
+
+```{r}
+#| label: clean_data
+# Combine language outcome from age 1 dataset with baseline dataset based on ID
+age1 <- age1 |> 
+  select(PUBLICSAMPLEID, CASQLANGA1)
+
+# Join by keeping all observations in age 1 data
+bfy <- baseline |> 
+  right_join(age1, by = join_by(PUBLICSAMPLEID))
+
+# The dataset includes both raw and generated variables. Generated variables
+# created by the BFY study staff and are recommended for analysis because 
+# they have been cleaned and are easier to use.
+# Remove raw variables based on variable label
+raw_label <- function(x) {
+  grepl("\\[Raw\\]", attr(x, "label"))
+}
+
+# Remove variables with [raw] in label
+# Convert variables to numeric
+bfy <- bfy |>
+  select(where(~ !raw_label(.))) |> 
+  mutate(across(where(is.labelled), as.numeric))
+```
+
+## Data exploration
+
+### Univariate analyses
+
+```{r}
+# Raincloud plot
+bfy |> 
+  ggplot(aes(1, CASQLANGA1)) + 
+  geom_rain(boxplot.args = list(outlier.color = "red")) + 
+  labs(y = "Standardized ASQ Communication Langauge Scores") + 
+  scale_y_continuous(limits = c(-3.5, 3.5), breaks = seq(-3, 3, 1)) + 
+  theme_classic() + 
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank()
+  ) +
+  coord_flip()
+```
+
+### Bivariate analyses
+
+```{r}
+# Bar chart
+bfy |> 
+  mutate(TREATA0 = factor(TREATA0)) |> 
+  group_by(TREATA0) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = TREATA0, y = mean, fill = TREATA0)) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.5)) +
+  scale_y_continuous(limits = c(0, 0.7), breaks = seq(0, 0.7, 0.1)) + 
+  labs(
+    x = "Treatment group",
+    y = "Standardized ASQ Communication Langauge Scores"
+  ) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+```{r}
+# Bar chart
+bfy |> 
+  mutate(HHSNAPA0 = factor(HHSNAPA0)) |> 
+  filter(!is.na(HHSNAPA0)) |> 
+  group_by(HHSNAPA0) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = HHSNAPA0, y = mean, fill = HHSNAPA0)) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.5)) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) + 
+  labs(
+    x = "Household Receives Food Stamps",
+    y = "Standardized ASQ Communication Langauge Scores"
+  ) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+```{r}
+# Bar chart
+bfy |> 
+  mutate(MEDLEVELA0 = factor(MEDLEVELA0)) |> 
+  filter(!is.na(MEDLEVELA0)) |> 
+  group_by(MEDLEVELA0) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = MEDLEVELA0, y = mean, fill = MEDLEVELA0)) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.5)) +
+  scale_y_continuous(limits = c(0, 0.4), breaks = seq(0, 0.4, 0.05)) + 
+  labs(
+    x = "Mother's Highest Level of Education Attained",
+    y = "Standardized ASQ Communication Langauge Scores"
+  ) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+## Model construction
+
+### Training and Testing
+
+```{r}
+# Split data into training set (75%) and testing set (25%)
+bfy_split <- initial_split(bfy)
+bfy_train <- training(bfy_split)
+bfy_test <- testing(bfy_split)
+```
+
+### Setting the formula and recipe
+
+```{r}
+# Define formula for linear regression
+bfy_formula <- as.formula("CASQLANGA1 ~ .")
+
+# Define pre-processing steps
+bfy_rf_recipe <- bfy |> 
+  recipe(bfy_formula) |> 
+  update_role(CASQLANGA1, new_role = "outcome") |> 
+  update_role(PUBLICSAMPLEID, new_role = "id") |>
+  step_other(all_nominal_predictors(), threshold = 0.01) |> 
+  step_dummy(all_nominal_predictors()) |> 
+  step_filter_missing(all_predictors(), threshold = 0.1) |> 
+  step_impute_mean(all_numeric_predictors()) |> 
+  step_naomit(all_outcomes()) |> 
+  step_zv(all_predictors())
+```
+
+```{r}
+# Apply transformations on training set and look at results
+bfy_rf_recipe |> prep() |> bake(bfy_train) |> head()
+```
+
+### Model specifications
+
+```{r}
+# Define random forest model
+bfy_rf_model <- rand_forest(
+    trees = 1000,
+    mtry = tune(),
+    min_n = tune()
+  ) |> 
+  set_mode("regression") |> 
+  set_engine("ranger")
+```
+
+```{r}
+# Set up workflow
+bfy_workflow <- 
+  workflow() |> 
+  add_model(bfy_rf_model) |> 
+  add_recipe(bfy_rf_recipe)
+```
+
+## Hyperparameter training
+
+```{r}
+# Set up grid and default values for parameters
+bfy_rf_regular_grid <- grid_regular(
+    mtry(range = c(10, 100)), 
+    min_n(), 
+    levels = 50
+  )
+```
+
+```{r}
+# Monte Carlo resampling on training data
+bfy_rf_resamples <- mc_cv(bfy_train, times = 25, prop = 0.75)
+```
+
+```{r}
+# Run model on the resampled data or load model fit if already created
+fit_model <- TRUE
+
+if(fit_model){
+  # Mark start time
+  start_time <- Sys.time()
+  
+  # Parallel processing
+  doParallel::registerDoParallel()
+
+  # Run model on the resampled data
+  bfy_rf_tune_results <- bfy_workflow |> 
+    tune_grid(
+      resamples = bfy_rf_resamples, 
+      grid = bfy_rf_regular_grid
+    )
+
+  # Save model fit
+  bfy_rf_tune_results_path <- here("final_paper", "bfy_rf_tune_results.Rdata")
+  save(bfy_rf_tune_results, file = bfy_rf_tune_results_path)
+  
+  # Mark end time
+  end_time <- Sys.time()
+  
+  # Report run time
+  end_time - start_time
+  
+} else {
+  # Load model fit if already created
+  bfy_rf_tune_results_path <- here("final_paper", "bfy_rf_tune_results.Rdata")
+  load(bfy_rf_tune_results_path)
+}
+```
+
+## Choosing the best model
+
+```{r}
+# Determine best combination of penalty and mixture for lowest rmse
+bfy_rf_tune_results |> 
+  collect_metrics() |> 
+  filter(.metric == "rmse") |> 
+  arrange(mean)
+```
+
+```{r}
+# Best parameters based on rmse
+best_rf_params <- bfy_rf_tune_results |> 
+  select_best(metric = "rmse")
+
+best_rf_params
+```
+
+```{r}
+# Finalize workflow
+final_rf_workflow <- bfy_workflow |> finalize_workflow(best_rf_params)
+```
+
+```{r}
+# Apply finalized model on training set and then compare it with validation set
+final_rf_model <- last_fit(final_rf_workflow, bfy_split)
+```
+
+```{r}
+# Evaluate model performance
+collect_metrics(final_rf_model)
+```
+

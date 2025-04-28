@@ -1,0 +1,238 @@
+---
+title: "Final Project Project Report 2"
+author: "Isaac Chen"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+---
+## Setup
+
+```{r}
+#| label: setup
+#| message: false
+
+# Clear all the variables in the environment
+rm(list = ls())
+
+# Print warnings immediately as they come up for troubleshooting purposes
+options(warn = 1)
+
+# Load packages
+library(here) # Used to find files relative to my project root
+library(tidyverse) # Used to tidying data
+library(skimr) # Used to create data summary
+library(ggrain) # Used to create raincloud plots
+
+# For reproducibility
+set.seed(123)
+```
+
+## Objective
+
+For this progress report I want you to begin describing patterns in your dependent variable.
+
+## Load Data
+
+Let's first load in the R data file from the [Baby's First Years (BFY)](https://www.childandfamilydataarchive.org/cfda/archives/cfda/studies/37871/summary) project. Specifically, I will be loading in data collected at age 1 years old.
+
+```{r}
+# Load data
+data <- here("data", "ICPSR_37871", "DS0002", "37871-0002-Data.rda")
+load(data)
+```
+
+Next, let's created a more simplified dataset with a few variables of interest. Then we will drop any rows that contain missing values.
+
+```{r}
+# Variable selection
+byf_a1 <- da37871.0002 |> 
+  select(
+    TREAT, CHILDGENDERA1, RHOMELESSA1, DAYCAREA1, CDISABILITYA1, CPRIMLANGTA1, 
+    READBOOKSA1, PLAYGROUPA1, TOTEARNEDINCOMEA1, CASQLANGA1, CASQLANGCUTOFFA1
+  ) |>
+  drop_na()
+```
+
+After removing all the missing data, we are left with 896 participants.
+
+Here is a code book of the variables selected:
+
+**Predictors**:
+
+- `TREAT` - Treatment group status
+  - 1 = high cash gift group
+  - 0 = low cash gift group
+- `CHILDGENDERA1` - Child Gender
+  - 1 = Boy
+  - 5 = Girl
+- `RHOMELESSA1` - Since [CHILD]’s birth, have you ever been homeless?
+  - 1 = Yes
+  - 5 = No
+- `DAYCAREA1` - Has [CHILD] spent any time in a child care or day care center?
+  - 1 = Yes
+  - 5 = No
+- `CDISABILITYA1` - Has [CHILD] been diagnosed with any health condition or disability since birth?
+  - 1 = Yes
+  - 5 = No
+- `CPRIMLANGTA1` - How often does your child hear [PRIMARY LANGUAGE]? Would you say: almost always
+[PRIMARY LANGUAGE], mostly [PRIMARY LANGUAGE], or about half [PRIMARY LANGUAGE] and half other.
+language(s)?; 
+  - 1 = Almost always [PRIMARY LANGUAGE]
+  - 2 = Mostly [PRIMARY LANGUAGE]
+  - 3 = Half [PRIMARY LANGUAGE] and half other.
+- `READBOOKSA1` - How often do you read books or look at pictures in a book with [CHILD]? Would you
+say: Every day, A few times a week, A few times a month or Rarely or not at all?
+  - 1 = Everyday
+  - 2 = A few times a week 
+  - 3 = A few times a month
+  - 4 = Rarely or not at all.
+- `PLAYGROUPA1` - How often do you go to any out-of-the home activities or programs that are specifically for babies, like Mommy and Me, library story times, and play groups?
+  - 1 = Every day
+  - 2 = A few times a week
+  - 3 = A few times a month
+  - 4 = Rarely or not at all.
+- `TOTEARNEDINCOMEA1` - How much did you earn from all your employers before taxes and deductions during
+the previous year? (continuous variable)
+
+**Outcome**:
+
+- `CASQLANGA1` - ASQ Communication Language Scale (standardized scores)
+- `CASQLANGCUTOFFA` - ASQ Communication cutoff
+  - 1 = Score below cutoff (2 SD below mean)
+  - 2 = Score close to cutoff (between 1 and 2 SD below mean)
+  - 3 = Score close to cutoff (between 1 and 2 SD below mean).
+
+Get some useful summary statistics
+
+```{r}
+# Data summary
+skim(byf_a1)
+```
+
+For this progress report, I will focus my analyses on the continuous variable `CASQLANGA1`, but I think it may be useful to use categorical outcomes given that the methods we have learned in this course have been focused on classification.
+
+## Univariate analysis
+
+1. Univariate analysis: provide appropriate measures of central tendency and variability for your dependent variable. If your dv is continuous, provide graphics showing the distribution of your variable.
+
+Raincloud plot of `CASQLANGA1`
+
+```{r}
+# Raincloud plot
+byf_a1 |> 
+  ggplot(aes(1, CASQLANGA1)) + 
+  geom_rain(boxplot.args = list(outlier.color = "red")) + 
+  labs(y = "Standardized ASQ Communication Langauge Scores") + 
+  scale_y_continuous(limits = c(-3.5, 3.5), breaks = seq(-3, 3, 1)) + 
+  theme_classic() + 
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank()
+  ) +
+  coord_flip()
+```
+
+## Bivariate analysis
+
+2. Bivariate analysis: provide the conditional mean of your dependent variable as function of at least three and no more than five of your independent variables. Provide the results in a table or graphic. Remember to use the group_by --> summarize approach, where group_by is based on a categorical or discretized independent variable. 
+
+Relationship between `CASQLANGA1` and `TREAT`
+
+```{r}
+# Bar chart
+byf_a1 |> 
+  group_by(TREAT) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = TREAT, y = mean, fill = TREAT)) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.5)) +
+  scale_y_continuous(limits = c(0, 0.7), breaks = seq(0, 0.7, 0.1)) + 
+  labs(
+    x = "Treatment group",
+    y = "Standardized ASQ Communication Langauge Scores"
+  ) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+Relationship between `CASQLANGA1` and `DAYCAREA1`
+
+```{r}
+# Bar chart
+byf_a1 |> 
+  group_by(DAYCAREA1) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = fct_rev(DAYCAREA1), y = mean, fill = fct_rev(DAYCAREA1))) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.5)) +
+  scale_y_continuous(limits = c(0, 0.7), breaks = seq(0, 0.7, 0.1)) + 
+  labs(
+    x = "Spent Time in Child Care of Day Care",
+    y = "Standardized ASQ Communication Langauge Scores"
+  ) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+Relationship between `CASQLANGA1` and `READBOOKSA1`
+
+```{r}
+# Bar chart
+byf_a1 |> 
+  group_by(READBOOKSA1) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = fct_rev(READBOOKSA1), y = mean, fill = fct_rev(READBOOKSA1))) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.5)) +
+  scale_y_continuous(limits = c(-0.2, 0.5), breaks = seq(-0.2, 0.7, 0.1)) + 
+  labs(
+    x = "Frequency of Book Reading",
+    y = "Standardized ASQ Communication Langauge Scores"
+  ) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+Relationship between `CASQLANGA1` and `PLAYGROUPA1`
+
+```{r}
+# Bar chart
+byf_a1 |> 
+  group_by(PLAYGROUPA1) |> 
+  summarize(mean = round(mean(CASQLANGA1, na.rm = TRUE), 3)) |> 
+  ggplot(aes(x = fct_rev(PLAYGROUPA1), y = mean, fill = fct_rev(PLAYGROUPA1))) +
+  geom_col(alpha = 0.5, width = 0.5) + 
+  geom_text(aes(label = paste0(mean), hjust = -0.5)) +
+  scale_y_continuous(limits = c(0, 0.7), breaks = seq(0, 0.7, 0.1)) + 
+  labs(
+    x = "Frequency of Out-of-home Activities/Programs",
+    y = "Standardized ASQ Communication Langauge Scores"
+  ) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+Relationship between `CASQLANGA1` and `TOTEARNEDINCOMEA1`
+
+```{r}
+# Scatter plot
+byf_a1 |> 
+  ggplot(aes(x = TOTEARNEDINCOMEA1, y = CASQLANGA1)) +
+  geom_point() +
+  geom_smooth(method = lm, col = "red") +
+  geom_smooth(method = "loess") + 
+  scale_x_continuous(limits = c(0, 150000), breaks = seq(0, 150000, 10000)) + 
+  labs(
+    x = "Total Earned Income in Previous Year", 
+    y = "Standardized ASQ Communication Langauge Scores"
+  ) +
+  theme_bw()
+```
+
+
+
+
+
